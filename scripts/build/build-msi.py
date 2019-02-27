@@ -370,7 +370,7 @@ def validate_args(usage, options):
     # [ version ]
     def check_project_version(version):
         '''A valid version must be like 1.2.2, 1.3'''
-        if not re.match('^[0-9]+(\.([0-9])+)+$', version):
+        if not re.match(r'^[0-9]+(\.[0-9]+)+$', version):
             error('%s is not a valid version' % version, usage=usage)
 
     version = get_option(CONF_VERSION)
@@ -732,6 +732,11 @@ def copy_qt_plugins_imageformats():
     src = os.path.join(qt_plugins_srcdir, 'qgif4.dll')
     if conf[CONF_QT5]:
         src = os.path.join(qt_plugins_srcdir, 'qgif.dll')
+    must_copy(src, destdir)
+
+    src = os.path.join(qt_plugins_srcdir, 'qjpeg.dll')
+    if conf[CONF_QT5]:
+        src = os.path.join(qt_plugins_srcdir, 'qjpeg.dll')
     must_copy(src, destdir)
 
 def copy_qt_plugins_platforms():

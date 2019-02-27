@@ -2,7 +2,7 @@ dnl Process this file with autoconf to produce a configure script.
 
 
 AC_PREREQ(2.61)
-AC_INIT([seafile], [6.2.2], [info@seafile.com])
+AC_INIT([seafile], [6.2.11], [info@seafile.com])
 AC_CONFIG_HEADER([config.h])
 
 AC_CONFIG_MACRO_DIR([m4])
@@ -24,6 +24,8 @@ AC_C_CONST
 AC_PROG_MAKE_SET
 # AC_PROG_RANLIB
 LT_INIT
+
+AM_PROG_VALAC([], [], [AC_MSG_ERROR([*** Unable to find Vala compiler])])
 
 # Checks for headers.
 #AC_CHECK_HEADERS([arpa/inet.h fcntl.h inttypes.h libintl.h limits.h locale.h netdb.h netinet/in.h stdint.h stdlib.h string.h strings.h sys/ioctl.h sys/socket.h sys/time.h termios.h unistd.h utime.h utmp.h])

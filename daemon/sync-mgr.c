@@ -32,6 +32,8 @@
 #define CHECK_LOCKED_FILES_INTERVAL 10 /* 10s */
 #define CHECK_FOLDER_PERMS_INTERVAL 30 /* 30s */
 
+#define SYNC_PERM_ERROR_RETRY_TIME 2
+
 struct _HttpServerState {
     int http_version;
     gboolean checking;
@@ -386,8 +388,17 @@ seaf_sync_manager_cancel_sync_task (SeafSyncManager *mgr,
 
     /* Cancel running task. */
     info = g_hash_table_lookup (mgr->sync_infos, repo_id);
-    if (!info || !info->in_sync)
+
+    if (!info)
         return;
+    else if (!info->in_sync) {
+        if (info->current_task->state == SYNC_STATE_ERROR) {
+            info->err_cnt = 0;
+            info->in_error = FALSE;
+            info->sync_perm_err_cnt = 0;
+        }
+        return;
+    }
 
     g_return_if_fail (info->current_task != NULL);
     task = info->current_task;
@@ -504,9 +515,12 @@ update_sync_info_error_state (SyncTask *task, int new_state)
         info->err_cnt++;
         if (info->err_cnt == IN_ERROR_THRESHOLD)
             info->in_error = TRUE;
+        if (task->error == SYNC_ERROR_ACCESS_DENIED)
+            info->sync_perm_err_cnt++;
     } else if (info->err_cnt > 0) {
         info->err_cnt = 0;
         info->in_error = FALSE;
+        info->sync_perm_err_cnt = 0;
     }
 }
 
@@ -1990,6 +2004,9 @@ auto_sync_pulse (void *vmanager)
         if (info->in_sync)
             continue;
 
+        if (info->sync_perm_err_cnt > SYNC_PERM_ERROR_RETRY_TIME)
+            continue;
+
         if (repo->version > 0) {
             /* For repo version > 0, only use http sync. */
             if (check_http_protocol (manager, repo)) {
@@ -2043,7 +2060,9 @@ on_repo_http_fetched (SeafileSession *seaf,
     } else if (tx_task->state == HTTP_TASK_STATE_CANCELED) {
         transition_sync_state (task, SYNC_STATE_CANCELED);
     } else if (tx_task->state == HTTP_TASK_STATE_ERROR) {
-        if (tx_task->error == HTTP_TASK_ERR_FORBIDDEN) {
+        if (tx_task->error == HTTP_TASK_ERR_FORBIDDEN ||
+            tx_task->error == HTTP_TASK_ERR_NO_WRITE_PERMISSION ||
+            tx_task->error == HTTP_TASK_ERR_NO_PERMISSION_TO_SYNC) {
             seaf_sync_manager_set_task_error (task, SYNC_ERROR_ACCESS_DENIED);
             if (!task->repo->access_denied_notified) {
                 send_sync_error_notification (task->repo, "sync.access_denied");
@@ -2088,7 +2107,9 @@ on_repo_http_uploaded (SeafileSession *seaf,
     } else if (tx_task->state == HTTP_TASK_STATE_CANCELED) {
         transition_sync_state (task, SYNC_STATE_CANCELED);
     } else if (tx_task->state == HTTP_TASK_STATE_ERROR) {
-        if (tx_task->error == HTTP_TASK_ERR_FORBIDDEN) {
+        if (tx_task->error == HTTP_TASK_ERR_FORBIDDEN ||
+            tx_task->error == HTTP_TASK_ERR_NO_WRITE_PERMISSION ||
+            tx_task->error == HTTP_TASK_ERR_NO_PERMISSION_TO_SYNC) {
             seaf_sync_manager_set_task_error (task, SYNC_ERROR_ACCESS_DENIED);
             if (!task->repo->access_denied_notified) {
                 send_sync_error_notification (task->repo, "sync.access_denied");

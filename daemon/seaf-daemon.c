@@ -4,6 +4,7 @@
 
 #ifdef WIN32
 #include <windows.h>
+#include <wincrypt.h>
 #endif
 
 #include <unistd.h>
@@ -271,12 +272,27 @@ register_rpc_service ()
                                      "seafile_get_sync_notification",
                                      searpc_signature_json__void());
 
+    searpc_server_register_function ("seafile-rpcserver",
+                                     seafile_shutdown,
+                                     "seafile_shutdown",
+                                     searpc_signature_int__void());
+
     /* Need to run in a thread since diff may take long. */
     searpc_server_register_function ("seafile-threaded-rpcserver",
                                      seafile_diff,
                                      "seafile_diff",
                                      searpc_signature_objlist__string_string_string_int());
 }
+
+#ifdef WIN32
+char *b64encode(const char *input)
+{
+    char buf[32767] = {0};
+    DWORD retlen = 32767;
+    CryptBinaryToString((BYTE*) input, strlen(input), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, buf, &retlen);
+    return strdup(buf);
+}
+#endif
 
 static int
 start_searpc_server ()
@@ -292,7 +308,7 @@ start_searpc_server ()
         return -1;
     }
 
-    char *path = g_strdup_printf("\\\\.\\pipe\\seafile_%s", userNameBuf);
+    char *path = g_strdup_printf("\\\\.\\pipe\\seafile_%s", b64encode(userNameBuf));
 #else
     char *path = g_build_filename (seaf->seaf_dir, SEAFILE_SOCKET_NAME, NULL);
 #endif

@@ -18,6 +18,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/bio.h>
+#include <openssl/asn1.h>
 #include <openssl/ssl.h>
 #endif
 
@@ -168,6 +169,8 @@ static const char *http_task_rt_state_str[] = {
 static const char *http_task_error_strs[] = {
     "Successful",
     "Permission denied on server",
+    "Do not have write permission to the library",
+    "Do not have permission to sync the library",
     "Network error",
     "Cannot resolve proxy address",
     "Cannot resolve server address",
@@ -380,42 +383,42 @@ http_tx_manager_start (HttpTxManager *mgr)
 
 #ifdef WIN32
 
-static void
-write_cert_name_to_pem_file (FILE *f, PCCERT_CONTEXT pc)
-{
-    char *name;
-    DWORD size;
+/* static void */
+/* write_cert_name_to_pem_file (FILE *f, PCCERT_CONTEXT pc) */
+/* { */
+/*     char *name; */
+/*     DWORD size; */
 
-    fprintf (f, "\n");
+/*     fprintf (f, "\n"); */
 
-    if (!CertGetCertificateContextProperty(pc,
-                                           CERT_FRIENDLY_NAME_PROP_ID,
-                                           NULL, &size)) {
-        return;
-    }
+/*     if (!CertGetCertificateContextProperty(pc, */
+/*                                            CERT_FRIENDLY_NAME_PROP_ID, */
+/*                                            NULL, &size)) { */
+/*         return; */
+/*     } */
 
-    name = g_malloc ((gsize)size);
-    if (!name) {
-        seaf_warning ("Failed to alloc memory\n");
-        return;
-    }
+/*     name = g_malloc ((gsize)size); */
+/*     if (!name) { */
+/*         seaf_warning ("Failed to alloc memory\n"); */
+/*         return; */
+/*     } */
 
-    if (!CertGetCertificateContextProperty(pc,
-                                           CERT_FRIENDLY_NAME_PROP_ID,
-                                           name, &size)) {
-        g_free (name);
-        return;
-    }
+/*     if (!CertGetCertificateContextProperty(pc, */
+/*                                            CERT_FRIENDLY_NAME_PROP_ID, */
+/*                                            name, &size)) { */
+/*         g_free (name); */
+/*         return; */
+/*     } */
 
-    if (fwrite(name, (size_t)size, 1, f) != 1) {
-        seaf_warning ("Failed to write pem file.\n");
-        g_free (name);
-        return;
-    }
-    fprintf (f, "\n");
+/*     if (fwrite(name, (size_t)size, 1, f) != 1) { */
+/*         seaf_warning ("Failed to write pem file.\n"); */
+/*         g_free (name); */
+/*         return; */
+/*     } */
+/*     fprintf (f, "\n"); */
 
-    g_free (name);
-}
+/*     g_free (name); */
+/* } */
 
 static void
 write_cert_to_pem_file (FILE *f, PCCERT_CONTEXT pc)
@@ -423,13 +426,19 @@ write_cert_to_pem_file (FILE *f, PCCERT_CONTEXT pc)
     const unsigned char *der = pc->pbCertEncoded;
     X509 *cert;
 
-    write_cert_name_to_pem_file (f, pc);
+    /* write_cert_name_to_pem_file (f, pc); */
 
     cert = d2i_X509 (NULL, &der, (int)pc->cbCertEncoded);
     if (!cert) {
         seaf_warning ("Failed to parse certificate from DER.\n");
         return;
     }
+
+    /* Don't add expired certs to pem file, otherwise openssl will
+     * complain certificate expired.
+     */
+    if (X509_cmp_current_time (X509_get_notAfter(cert)) < 0)
+        return;
 
     if (!PEM_write_X509 (f, cert)) {
         seaf_warning ("Failed to write certificate.\n");
@@ -708,6 +717,8 @@ recv_response (void *contents, size_t size, size_t nmemb, void *userp)
     return realsize;
 }
 
+extern FILE *seafile_get_log_fp ();
+
 #define HTTP_TIMEOUT_SEC 300
 
 typedef size_t (*HttpRecvCallback) (void *, size_t, size_t, void *);
@@ -729,6 +740,11 @@ http_get (CURL *curl, const char *url, const char *token,
     char *token_header;
     struct curl_slist *headers = NULL;
     int ret = 0;
+
+    if (seafile_debug_flag_is_set (SEAFILE_DEBUG_CURL)) {
+        curl_easy_setopt (curl, CURLOPT_VERBOSE, 1);
+        curl_easy_setopt (curl, CURLOPT_STDERR, seafile_get_log_fp());
+    }
 
     headers = curl_slist_append (headers, "User-Agent: Seafile/"SEAFILE_CLIENT_VERSION" ("USER_AGENT_OS")");
 
@@ -854,6 +870,11 @@ http_put (CURL *curl, const char *url, const char *token,
     struct curl_slist *headers = NULL;
     int ret = 0;
 
+    if (seafile_debug_flag_is_set (SEAFILE_DEBUG_CURL)) {
+        curl_easy_setopt (curl, CURLOPT_VERBOSE, 1);
+        curl_easy_setopt (curl, CURLOPT_STDERR, seafile_get_log_fp());
+    }
+
     headers = curl_slist_append (headers, "User-Agent: Seafile/"SEAFILE_CLIENT_VERSION" ("USER_AGENT_OS")");
     /* Disable the default "Expect: 100-continue" header */
     headers = curl_slist_append (headers, "Expect:");
@@ -970,6 +991,11 @@ http_post (CURL *curl, const char *url, const char *token,
     int ret = 0;
 
     g_return_val_if_fail (req_content != NULL, -1);
+
+    if (seafile_debug_flag_is_set (SEAFILE_DEBUG_CURL)) {
+        curl_easy_setopt (curl, CURLOPT_VERBOSE, 1);
+        curl_easy_setopt (curl, CURLOPT_STDERR, seafile_get_log_fp());
+    }
 
     headers = curl_slist_append (headers, "User-Agent: Seafile/"SEAFILE_CLIENT_VERSION" ("USER_AGENT_OS")");
     /* Disable the default "Expect: 100-continue" header */
@@ -1100,6 +1126,10 @@ handle_http_errors (HttpTxTask *task, int status)
 static int
 curl_error_to_http_task_error (int curl_error)
 {
+    if (curl_error == CURLE_SSL_CACERT ||
+        curl_error == CURLE_PEER_FAILED_VERIFICATION)
+        return HTTP_TASK_ERR_SSL;
+
     switch (curl_error) {
     case CURLE_COULDNT_RESOLVE_PROXY:
         return HTTP_TASK_ERR_RESOLVE_PROXY;
@@ -1110,9 +1140,7 @@ curl_error_to_http_task_error (int curl_error)
     case CURLE_OPERATION_TIMEDOUT:
         return HTTP_TASK_ERR_TX_TIMEOUT;
     case CURLE_SSL_CONNECT_ERROR:
-    case CURLE_PEER_FAILED_VERIFICATION:
     case CURLE_SSL_CERTPROBLEM:
-    case CURLE_SSL_CACERT:
     case CURLE_SSL_CACERT_BADFILE:
     case CURLE_SSL_ISSUER_ERROR:
         return HTTP_TASK_ERR_SSL;
@@ -2359,13 +2387,27 @@ clean_tasks_for_repo (HttpTxManager *manager, const char *repo_id)
                                  remove_task_help, (gpointer)repo_id);
 }
 
+static void
+notify_sync_perm_error (HttpTxTask *task, const char *unsyncable_path)
+{
+
+    send_file_sync_error_notification (task->repo_id, task->repo_name,
+                                       unsyncable_path, SYNC_ERROR_ID_PERM_NOT_SYNCABLE);
+
+}
+
 static int
 check_permission (HttpTxTask *task, Connection *conn)
 {
     CURL *curl;
     char *url;
     int status;
+    char *rsp_content = NULL;
+    gint64 rsp_size;
     int ret = 0;
+    json_t *rsp_obj = NULL, *reason = NULL, *unsyncable_path = NULL;
+    const char *reason_str = NULL, *unsyncable_path_str = NULL;
+    json_error_t jerror;
 
     curl = conn->curl;
 
@@ -2385,7 +2427,7 @@ check_permission (HttpTxTask *task, Connection *conn)
     }
 
     int curl_error;
-    if (http_get (curl, url, task->token, &status, NULL, NULL, NULL, NULL, TRUE, &curl_error) < 0) {
+    if (http_get (curl, url, task->token, &status, &rsp_content, &rsp_size, NULL, NULL, TRUE, &curl_error) < 0) {
         conn->release = TRUE;
         handle_curl_errors (task, curl_error);
         ret = -1;
@@ -2394,12 +2436,56 @@ check_permission (HttpTxTask *task, Connection *conn)
 
     if (status != HTTP_OK) {
         seaf_warning ("Bad response code for GET %s: %d.\n", url, status);
-        handle_http_errors (task, status);
+
+        if (status != HTTP_FORBIDDEN || !rsp_content) {
+            handle_http_errors (task, status);
+            ret = -1;
+            goto out;
+        }
+
+        rsp_obj = json_loadb (rsp_content, rsp_size, 0 ,&jerror);
+        if (!rsp_obj) {
+            seaf_warning ("Parse check permission response failed: %s.\n", jerror.text);
+            handle_http_errors (task, status);
+            json_decref (rsp_obj);
+            ret = -1;
+            goto out;
+        }
+
+        reason = json_object_get (rsp_obj, "reason");
+        if (!reason) {
+            handle_http_errors (task, status);
+            json_decref (rsp_obj);
+            ret = -1;
+            goto out;
+        }
+
+        reason_str = json_string_value (reason);
+        if (g_strcmp0 (reason_str, "no write permission") == 0) {
+            task->error = HTTP_TASK_ERR_NO_WRITE_PERMISSION;
+        } else if (g_strcmp0 (reason_str, "unsyncable share permission") == 0) {
+            task->error = HTTP_TASK_ERR_NO_PERMISSION_TO_SYNC;
+
+            unsyncable_path = json_object_get (rsp_obj, "unsyncable_path");
+            if (!unsyncable_path) {
+                json_decref (rsp_obj);
+                ret = -1;
+                goto out;
+            }
+
+            unsyncable_path_str = json_string_value (unsyncable_path);
+            if (unsyncable_path_str)
+                notify_sync_perm_error (task, unsyncable_path_str);
+        } else {
+            task->error = HTTP_TASK_ERR_FORBIDDEN;
+        }
+
         ret = -1;
     }
 
 out:
     g_free (url);
+    g_free (rsp_content);
     curl_easy_reset (curl);
 
     return ret;
@@ -3473,6 +3559,7 @@ update_branch (HttpTxTask *task, Connection *conn)
     char *url;
     int status;
     char *rsp_content;
+    char *rsp_content_str = NULL;
     gint64 rsp_size;
     int ret = 0;
 
@@ -3501,9 +3588,11 @@ update_branch (HttpTxTask *task, Connection *conn)
         handle_http_errors (task, status);
 
         if (status == HTTP_FORBIDDEN) {
-            rsp_content[rsp_size] = '\0';
-            seaf_warning ("%s\n", rsp_content);
-            notify_permission_error (task, rsp_content);
+            rsp_content_str = g_new0 (gchar, rsp_size + 1);
+            memcpy (rsp_content_str, rsp_content, rsp_size);
+            seaf_warning ("%s\n", rsp_content_str);
+            notify_permission_error (task, rsp_content_str);
+            g_free (rsp_content_str);
         }
 
         ret = -1;
@@ -3511,6 +3600,7 @@ update_branch (HttpTxTask *task, Connection *conn)
 
 out:
     g_free (url);
+    g_free (rsp_content);
     curl_easy_reset (curl);
 
     return ret;
@@ -4683,4 +4773,20 @@ http_task_error_str (int task_errno)
         return "unknown error";
 
     return http_task_error_strs[task_errno];
+}
+
+gboolean
+is_http_task_net_error (char *err_detail)
+{
+    if (err_detail &&
+        (strcmp (err_detail,  http_task_error_strs[HTTP_TASK_ERR_NET]) == 0 ||
+         strcmp (err_detail,  http_task_error_strs[HTTP_TASK_ERR_RESOLVE_PROXY]) == 0 ||
+         strcmp (err_detail,  http_task_error_strs[HTTP_TASK_ERR_RESOLVE_HOST]) == 0 ||
+         strcmp (err_detail,  http_task_error_strs[HTTP_TASK_ERR_CONNECT]) == 0 ||
+         strcmp (err_detail,  http_task_error_strs[HTTP_TASK_ERR_SSL]) == 0 ||
+         strcmp (err_detail,  http_task_error_strs[HTTP_TASK_ERR_TX]) == 0 ||
+         strcmp (err_detail,  http_task_error_strs[HTTP_TASK_ERR_TX_TIMEOUT]) == 0))
+        return TRUE;
+    else
+        return FALSE;
 }

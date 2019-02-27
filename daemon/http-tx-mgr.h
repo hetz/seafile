@@ -37,6 +37,8 @@ enum HttpTaskRuntimeState {
 enum HttpTaskError {
     HTTP_TASK_OK = 0,
     HTTP_TASK_ERR_FORBIDDEN,
+    HTTP_TASK_ERR_NO_WRITE_PERMISSION,
+    HTTP_TASK_ERR_NO_PERMISSION_TO_SYNC,
     HTTP_TASK_ERR_NET,
     HTTP_TASK_ERR_RESOLVE_PROXY,
     HTTP_TASK_ERR_RESOLVE_HOST,
@@ -327,3 +329,5 @@ const char *
 http_task_error_str (int task_errno);
 
 #endif
+gboolean
+is_http_task_net_error (char *err_detail);
